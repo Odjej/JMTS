@@ -1,4 +1,5 @@
-"""Robust simulate helper: loads driving network from the repo's data folder
+"""
+Robust simulate helper: loads driving network from the repo's data folder
 and builds a NetworkX graph. This avoids brittle relative paths and missing
 GraphML files by using the available `.gpkg` files in `data/processed/networks`.
 """

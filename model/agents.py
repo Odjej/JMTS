@@ -148,6 +148,10 @@ class CarAgent:
 
         self.travel_time += dt
 
+    @property
+    def position(self):
+        return getattr(self, 'current_coord', None)
+
     #  a simple lane shift evaluator 
     def evaluate_lane_shift(self, env):
         """
@@ -274,89 +278,8 @@ class PedestrianAgent:
         if math.hypot(self.current_coord[0] - self.end_coord[0], self.current_coord[1] - self.end_coord[1]) < 0.5:
             self.mode = 'arrived'
 
+    @property
+    def position(self):
+        return getattr(self, 'current_coord', None)
 
-# --- Tram agent: timetable-driven, uses GFM for cruise and special stop handling ---
-class TramAgent:
-    def __init__(self, agent_id: str, route_nodes: List[Tuple[float, float]], timetable: List[float], stop_indices: List[int]):
-        """
-        route_nodes: list of node coords forming the tram route (tram lanes)
-        timetable: list of scheduled departure times (seconds) from the initial stop or absolute times for stops
-        stop_indices: indices into route_nodes where tram stops are located
-        """
-        self.agent_id = agent_id
-        self.route = route_nodes[:]
-        self.timetable = timetable[:]   # interpreted by simulation environment
-        self.stop_indices = set(stop_indices)
-        self.position_index = 0
-        self.v = 0.0
-        self.v0 = 10.0  # typical tram desired speed ~ 30-40 km/h -> 8.3 - 11.1 m/s; can be parameterized
-        self.mode = 'tram'
-        self.current_stop_departure_time = None
-        self.on_stop = False
-        self.wait_until = None
 
-    def step(self, dt: float, sim_time: float, env=None):
-        """
-        sim_time: current sim clock in seconds. The tram uses timetable and will not depart a stop
-                  until its scheduled departure time.
-        env: used optionally to get leader/tram ahead or boarding time estimates.
-        """
-        # If at a scheduled stop and not yet departed, obey timetable
-        if self.position_index in self.stop_indices:
-            # at stop
-            if not self.on_stop:
-                # initialize stop (boarding etc)
-                self.on_stop = True
-                # compute scheduled departure for this stop; environment/timetable interpretation can vary
-                # as a simple rule: if timetable gives departure times for origin only, env can compute stop times.
-                # For simplicity here, if timetable contains this stop index mapping, use it; otherwise allow immediate depart.
-                # We'll assume env.get_stop_departure(self, sim_time) returns the correct time if needed
-                if env is not None and hasattr(env, 'get_stop_departure'):
-                    self.wait_until = env.get_stop_departure(self, self.position_index, sim_time)
-                else:
-                    self.wait_until = sim_time + 2.0  # default dwell 2s
-                self.v = 0.0
-            else:
-                # already on stop
-                if sim_time >= (self.wait_until or sim_time):
-                    # depart now
-                    self.on_stop = False
-                    self.wait_until = None
-        else:
-            # not at stop: accelerate/brake based on leader or desired speed using GFM-like rules
-            leader_dist, leader_spd = (None, 0.0)
-            if env is not None and hasattr(env, 'get_leader'):
-                try:
-                    leader_dist, leader_spd = env.get_leader(self)
-                except Exception:
-                    leader_dist, leader_spd = (None, 0.0)
-
-            # desired accel
-            a_des = (self.v0 - self.v) / 1.0
-            a_rep = 0.0
-            if leader_dist is not None:
-                # strong braking if too close
-                if leader_dist < 10.0:
-                    a_rep = -2.0 * (10.0 - leader_dist) / 10.0
-
-            a = a_des + a_rep
-            a = max(-3.0, min(a, 1.5))
-            self.v = max(0.0, self.v + a * dt)
-
-            # move along route similarly to CarAgent (linear interpolation)
-            if self.position_index < len(self.route) - 1:
-                dist_to_cover = self.v * dt
-                while dist_to_cover > 0 and self.position_index < len(self.route) - 1:
-                    p0 = self.route[self.position_index]
-                    p1 = self.route[self.position_index + 1]
-                    seg_len = math.hypot(p1[0] - p0[0], p1[1] - p0[1])
-                    if seg_len <= 1e-6:
-                        self.position_index += 1
-                        continue
-                    if dist_to_cover >= seg_len:
-                        dist_to_cover -= seg_len
-                        self.position_index += 1
-                    else:
-                        # partial progress: keep index.
-                        # For simplicity we don't store fractional index here; env may compute position
-                        dist_to_cover = 0

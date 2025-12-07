@@ -1,6 +1,7 @@
 import geopandas as gpd
 import networkx as nx
 import numpy as np
+import geopandas as gpd
 
 def load_edges(gpkg_path, layer=None):
     """Load edge layer from a GeoPackage and ensure a metric CRS and length."""
@@ -17,7 +18,8 @@ def load_edges(gpkg_path, layer=None):
     return gdf
 
 def build_graph_from_edges(edges_gdf, default_speed_kmph=50):
-    """Build a directed NetworkX graph from an edges GeoDataFrame.
+    """
+    Build a directed NetworkX graph from an edges GeoDataFrame.
 
     Nodes are created from geometry endpoints (coordinate tuples). Edges get
     attributes: length_m, travel_time_s, edge_id.
@@ -61,3 +63,44 @@ def nearest_node(G, point):
     dists = np.hypot(coords[:,0] - px, coords[:,1] - py)
     idx = int(np.argmin(dists))
     return nodes[idx][0]
+
+
+def load_tram_route(path: str):
+    """
+    Load tram polylines from a GPKG and return list of (x, y) coordinates.
+    Supports LineString and MultiLineString geometries. Returns an ordered
+    list of coordinate tuples suitable for simple plotting.
+    """
+    try:
+        import geopandas as gpd
+    except Exception as e:
+        raise RuntimeError('geopandas is required to load tram routes') from e
+
+    gdf = gpd.read_file(path)
+
+    coords = []
+    for geom in getattr(gdf, 'geometry', []):
+        if geom is None:
+            continue
+        geom_type = getattr(geom, 'geom_type', None)
+        if geom_type == 'LineString':
+            coords.extend(list(geom.coords))
+        elif geom_type == 'MultiLineString':
+            for line in geom:
+                coords.extend(list(line.coords))
+
+    # Remove consecutive duplicates while preserving order
+    cleaned = []
+    prev = None
+    for c in coords:
+        if c != prev:
+            cleaned.append((float(c[0]), float(c[1])))
+        prev = c
+
+    return cleaned
+
+
+
+
+
+
