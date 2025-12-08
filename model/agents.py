@@ -28,7 +28,7 @@ class CarAgent:
         self.position_index = 0           # index into route of current node (simple discrete position)
         self.travel_time = 0.0
 
-    def plan_route(self, G: nx.Graph, default_speed_m_s: float = 13.89):
+    def plan_route(self, G: nx.Graph, default_speed_m_s: float = 13.89, env=None):
         """A* route planning from start_coord to end_coord on graph G."""
         try:
             from model.network_utils import nearest_node
@@ -44,8 +44,21 @@ class CarAgent:
             euclid = math.hypot(ux - vx, uy - vy)
             return euclid / default_speed_m_s
 
+        # choose weight function: if env provided, prefer dynamic edge travel time
+        if env is not None and hasattr(env, 'get_edge_travel_time'):
+            def weight(u, v, data=None):
+                try:
+                    return env.get_edge_travel_time((u, v))
+                except Exception:
+                    return float(data.get('travel_time_s', data.get('length_m', 0) / default_speed_m_s)) if data is not None else 0.0
+        else:
+            def weight(u, v, data=None):
+                if data is None:
+                    data = G.get_edge_data(u, v) or {}
+                return float(data.get('travel_time_s', data.get('length_m', 0) / default_speed_m_s))
+
         try:
-            path = nx.astar_path(G, self._start_node, self._end_node, heuristic=heuristic, weight='travel_time_s')
+            path = nx.astar_path(G, self._start_node, self._end_node, heuristic=heuristic, weight=weight)
         except nx.NetworkXNoPath:
             self.route = []
             return
