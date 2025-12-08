@@ -328,9 +328,9 @@ def main(argv=None):
                     ideal = dx * 0.10
                     candidates = [50, 100, 200, 500, 1000, 2000, 5000, 10000]
                     scale_len = min(candidates, key=lambda c: abs(c - ideal))
-                    # scalebar position in data coords (lower left)
-                    sb_x = x1 - 0.02 * dx
-                    sb_y = y1 - 0.02 * dy
+                    # scalebar position in data coords 
+                    sb_x = x1 - 0.1 * dx
+                    sb_y = y0 + 0.02 * dy
                     ax.plot([sb_x, sb_x + scale_len], [sb_y, sb_y], color='k', linewidth=3)
                     ax.plot([sb_x, sb_x], [sb_y - 0.005 * dy, sb_y + 0.005 * dy], color='k', linewidth=2)
                     ax.plot([sb_x + scale_len, sb_x + scale_len], [sb_y - 0.005 * dy, sb_y + 0.005 * dy], color='k', linewidth=2)
