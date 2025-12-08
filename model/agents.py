@@ -27,6 +27,8 @@ class CarAgent:
         self.length_m = 4.5               # vehicle length
         self.position_index = 0           # index into route of current node (simple discrete position)
         self.travel_time = 0.0
+        # lane index on current edge (0 = leftmost/default)
+        self.lane = 0
 
     def plan_route(self, G: nx.Graph, default_speed_m_s: float = 13.89, env=None):
         """A* route planning from start_coord to end_coord on graph G."""
@@ -109,12 +111,34 @@ class CarAgent:
         except Exception:
             return (None, 0.0)
 
+    def attempt_lane_change(self, env):
+        """Try to change lane using environment's can_change_lane logic."""
+        if env is None:
+            return False
+        try:
+            target = env.can_change_lane(self)
+            if target is None:
+                return False
+            return env.change_lane(self, target)
+        except Exception:
+            return False
+
     def step(self, dt: float, env=None):
         """
         Advance vehicle state over timestep dt (seconds).
         env: simulation environment helper that can provide leader info, traffic light state,
              virtual preceding pedestrians, etc. This keeps the agent logic separate.
         """
+        # decide on lane change (overtaking) before acceleration/movement
+        try:
+            if self.evaluate_lane_shift(env):
+                changed = self.attempt_lane_change(env)
+                if changed:
+                    # small brief speed boost to reflect successful overtake initiation
+                    self.v = min(self.v * 1.05 + 0.1, self.v0)
+        except Exception:
+            pass
+
         # desired acceleration toward v0
         a_des = self._desired_accel()
 

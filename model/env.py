@@ -23,12 +23,15 @@ class Environment:
         self.G = G
         self.agents = []
         self.time = 0.0
+        # default cooldown (s) between successive lane changes per agent
+        self.lane_change_cooldown_default = 3.0
         # Build edge geometries and spatial index for quick lookup
         self._edge_geoms = []  # list of shapely LineString objects (if available)
         self._edge_keys = []   # parallel list of edge keys (u,v)
         self.edge_index = None
-        # occupancy: edge_key -> list of occupant dicts {agent, frac, pos, speed}
-        self.edge_occupancy: Dict[Tuple[Any, Any], List[Dict[str, Any]]] = defaultdict(list)
+        # occupancy: (edge_key, lane) -> list of occupant dicts {agent, frac, pos, speed}
+        # edge_key is (u,v) where u/v are node coordinate tuples
+        self.edge_occupancy: Dict[Tuple[Tuple[Any, Any], int], List[Dict[str, Any]]] = defaultdict(list)
         # dynamic travel time multipliers and construction events
         self.edge_multiplier: Dict[Tuple[Any, Any], float] = {}
         self.construction_events: Dict[Tuple[Any, Any], Dict[str, Any]] = {}
@@ -56,6 +59,20 @@ class Environment:
         # give agent a backref to env
         try:
             agent.env = self
+        except Exception:
+            pass
+        # ensure agent has lane attribute (default 0)
+        if not hasattr(agent, 'lane'):
+            try:
+                agent.lane = 0
+            except Exception:
+                pass
+        # initialize lane-change bookkeeping on the agent
+        try:
+            # timestamp of last lane change -> very negative so agent may change immediately
+            agent.last_lane_change_time = -1e9
+            if not hasattr(agent, 'lane_change_cooldown'):
+                agent.lane_change_cooldown = self.lane_change_cooldown_default
         except Exception:
             pass
 
@@ -113,9 +130,10 @@ class Environment:
         best_speed = 0.0
 
         # Search occupancy starting from current edge onwards
-        # First check same edge
+        # First check same edge in same lane
         cur_edge = (agent.route[a_idx], agent.route[a_idx + 1])
-        occ_list = self.edge_occupancy.get(cur_edge, [])
+        lane = getattr(agent, 'lane', 0)
+        occ_list = self.edge_occupancy.get((cur_edge, lane), [])
         for occ in occ_list:
             if occ.get('agent') is agent:
                 continue
@@ -128,7 +146,7 @@ class Environment:
                 best_dist = d
                 best_speed = occ.get('speed', 0.0)
 
-        # Then check subsequent edges along route
+        # Then check subsequent edges along route (same lane)
         if best_dist is None:
             cum = 0.0
             # remaining length in current segment
@@ -138,7 +156,7 @@ class Environment:
             cum += seg_len * (1.0 - a_frac)
             for i in range(a_idx + 1, len(agent.route) - 1):
                 e = (agent.route[i], agent.route[i+1])
-                occs = self.edge_occupancy.get(e, [])
+                occs = self.edge_occupancy.get((e, lane), [])
                 if occs:
                     # find nearest occupant on this edge (smallest frac)
                     nearest = min([o for o in occs if o.get('agent') is not agent], key=lambda o: o.get('frac', 0.0), default=None)
@@ -198,7 +216,8 @@ class Environment:
             if idx >= len(agent.route) - 1:
                 return getattr(agent, 'v', 0.0)
             edge = (agent.route[idx], agent.route[idx + 1])
-            occ = self.edge_occupancy.get(edge, [])
+            lane = getattr(agent, 'lane', 0)
+            occ = self.edge_occupancy.get((edge, lane), [])
             if not occ:
                 return getattr(agent, 'v', 0.0)
             return sum(o.get('speed', 0.0) for o in occ) / max(1, len(occ))
@@ -206,8 +225,85 @@ class Environment:
             return getattr(agent, 'v', 0.0)
 
     def avg_speed_on_adjacent_lane(self, agent):
-        # Placeholder: no lane topology implemented yet; return same as current lane
-        return self.avg_speed_on_lane(agent)
+        # Very simple adjacent-lane evaluation: check left and right lane averages and return the best
+        try:
+            lane = getattr(agent, 'lane', 0)
+            u, v = agent.route[agent.position_index], agent.route[agent.position_index + 1]
+            max_lane = int(self.G.get_edge_data(u, v, {}).get('lanes', 1)) - 1
+            candidates = []
+            for nl in (lane - 1, lane + 1):
+                if nl < 0 or nl > max_lane:
+                    continue
+                occ = self.edge_occupancy.get(((u, v), nl), [])
+                if not occ:
+                    candidates.append(getattr(agent, 'v', 0.0))
+                else:
+                    candidates.append(sum(o.get('speed', 0.0) for o in occ) / max(1, len(occ)))
+            if not candidates:
+                return self.avg_speed_on_lane(agent)
+            return max(candidates)
+        except Exception:
+            return self.avg_speed_on_lane(agent)
+
+    def can_change_lane(self, agent, min_speed_gain: float = 1.0):
+        """Decide if agent can change lane to overtake.
+
+        Returns the target lane index if lane change is advised and available, else None.
+        Simple rule: if adjacent lane avg speed > current lane avg speed + min_speed_gain
+        and adjacent lane density is not higher than current lane, allow change.
+        """
+        try:
+            # enforce per-agent cooldown to avoid rapid back-and-forth lane oscillation
+            last = getattr(agent, 'last_lane_change_time', -1e9)
+            cooldown = getattr(agent, 'lane_change_cooldown', self.lane_change_cooldown_default)
+            if (self.time - last) < float(cooldown):
+                return None
+            lane = getattr(agent, 'lane', 0)
+            idx = agent.position_index
+            if idx >= len(agent.route) - 1:
+                return None
+            edge = (agent.route[idx], agent.route[idx + 1])
+            u, v = edge
+            num_lanes = int(self.G.get_edge_data(u, v, {}).get('lanes', 1))
+            cur_speed = self.avg_speed_on_lane(agent)
+            cur_density = self.get_edge_density(edge)
+            best_gain = 0.0
+            best_lane = None
+            for nl in (lane - 1, lane + 1):
+                if nl < 0 or nl >= num_lanes:
+                    continue
+                occ = self.edge_occupancy.get((edge, nl), [])
+                if not occ:
+                    adj_speed = getattr(agent, 'v', 0.0)
+                    adj_density = 0.0
+                else:
+                    adj_speed = sum(o.get('speed',0.0) for o in occ) / max(1, len(occ))
+                    # compute density for that lane
+                    adj_density = len(occ) / max(1e-6, math.hypot(edge[1][0]-edge[0][0], edge[1][1]-edge[0][1]))
+                gain = adj_speed - cur_speed
+                # prefer lanes with higher speed and not much higher density
+                if gain > min_speed_gain and adj_density <= max(cur_density * 1.2, cur_density + 0.1):
+                    if gain > best_gain:
+                        best_gain = gain
+                        best_lane = nl
+            return best_lane
+        except Exception:
+            return None
+
+    def change_lane(self, agent, target_lane: int) -> bool:
+        """Perform lane change for agent when allowed. Returns True if changed."""
+        try:
+            if target_lane is None:
+                return False
+            agent.lane = int(target_lane)
+            # record lane change time to enforce cooldown/hysteresis
+            try:
+                agent.last_lane_change_time = float(self.time)
+            except Exception:
+                pass
+            return True
+        except Exception:
+            return False
 
 
     # ------------------- Occupancy & Edge Dynamics -------------------
@@ -243,13 +339,14 @@ class Environment:
             b = agent.route[idx+1]
             frac, dist = self._project_frac_on_segment(getattr(agent, 'current_coord', a), a, b)
             edge_key = (a, b)
+            lane = getattr(agent, 'lane', 0)
             occ = {
                 'agent': agent,
                 'frac': frac,
                 'pos': getattr(agent, 'current_coord', a),
                 'speed': getattr(agent, 'v', 0.0)
             }
-            self.edge_occupancy[edge_key].append(occ)
+            self.edge_occupancy[(edge_key, lane)].append(occ)
 
         # sort occupancy lists by fraction ascending
         for k in list(self.edge_occupancy.keys()):
@@ -257,7 +354,15 @@ class Environment:
 
     def get_edge_occupancy(self, edge_key):
         """Return occupancy list for an edge key (u,v)."""
-        return list(self.edge_occupancy.get(edge_key, []))
+        # Support both old (edge_key) and new ((edge_key, lane)) queries
+        if isinstance(edge_key, tuple) and len(edge_key) == 2 and isinstance(edge_key[0], tuple) and isinstance(edge_key[1], int):
+            return list(self.edge_occupancy.get(edge_key, []))
+        # return combined occupancy across all lanes for backward compatibility
+        results = []
+        for (e, lane), occ in self.edge_occupancy.items():
+            if e == edge_key:
+                results.extend(occ)
+        return results
 
     def get_edge_density(self, edge_key):
         """Return simple density: vehicles per meter on edge."""
@@ -320,16 +425,6 @@ class Environment:
             density_factor += 0.5 * (density / 0.1)
         return base * mult * density_factor
 
-
-def random_graph_od(G):
-    """Return two random (different) node coords from the graph."""
-    nodes = list(G.nodes())
-    start = random.choice(nodes)
-    end = random.choice(nodes)
-    while end == start:
-        end = random.choice(nodes)
-    return start, end
-
     def step(self, dt: float):
         """Advance the environment clock and step all registered agents.
 
@@ -337,6 +432,8 @@ def random_graph_od(G):
           - step(dt, sim_time, env)
           - step(dt, env)
           - step(dt)
+        After agents have been stepped, occupancy is updated and expired
+        construction events are cleared.
         """
         self.time += dt
         for agent in list(self.agents):
@@ -367,3 +464,14 @@ def random_graph_od(G):
             self.clear_expired_construction()
         except Exception:
             pass
+
+
+def random_graph_od(G):
+    """Return two random (different) node coords from the graph."""
+    nodes = list(G.nodes())
+    start = random.choice(nodes)
+    end = random.choice(nodes)
+    while end == start:
+        end = random.choice(nodes)
+    return start, end
+ 
