@@ -325,6 +325,120 @@ class Environment:
         dist = math.hypot(p[0]-projx, p[1]-projy)
         return frac, dist
 
+    def _distance_along_route_to_point(self, agent, point: Tuple[float, float], lateral_threshold: float = 3.0):
+        """Return distance (m) along agent.route from current agent position to projection of `point` onto route.
+        If projection is not within lateral_threshold on any route segment or the projected location is behind
+        the agent, return None.
+        """
+        if not hasattr(agent, 'route') or not agent.route:
+            return None
+        # compute agent current index and frac
+        a_idx = getattr(agent, 'position_index', 0)
+        try:
+            a_pos = getattr(agent, 'current_coord', agent.route[a_idx])
+        except Exception:
+            return None
+
+        # compute agent fractional position on current segment
+        try:
+            p0 = agent.route[a_idx]
+            p1 = agent.route[a_idx + 1]
+            seg_len = math.hypot(p1[0]-p0[0], p1[1]-p0[1])
+            if seg_len > 1e-9:
+                vx = a_pos[0] - p0[0]
+                vy = a_pos[1] - p0[1]
+                dot = vx*(p1[0]-p0[0]) + vy*(p1[1]-p0[1])
+                a_frac = max(0.0, min(1.0, dot / (seg_len*seg_len)))
+            else:
+                a_frac = 0.0
+        except Exception:
+            return None
+
+        # helper to compute cumulative length from agent position to a given (seg_idx, frac)
+        def cum_len_to(seg_idx:int, frac:float) -> float:
+            d = 0.0
+            # remaining on current segment
+            p0 = agent.route[a_idx]
+            p1 = agent.route[a_idx + 1]
+            first_seg_len = math.hypot(p1[0]-p0[0], p1[1]-p0[1])
+            d += max(0.0, first_seg_len * (1.0 - a_frac))
+            # full segments between
+            for i in range(a_idx+1, seg_idx):
+                pa = agent.route[i]
+                pb = agent.route[i+1]
+                d += math.hypot(pb[0]-pa[0], pb[1]-pa[1])
+            # partial of target segment
+            if seg_idx < len(agent.route)-1:
+                ta = agent.route[seg_idx]
+                tb = agent.route[seg_idx+1]
+                segl = math.hypot(tb[0]-ta[0], tb[1]-ta[1])
+                d += segl * frac
+            return d
+
+        best_dist = None
+        for i in range(0, len(agent.route)-1):
+            a = agent.route[i]
+            b = agent.route[i+1]
+            frac, latdist = self._project_frac_on_segment(point, a, b)
+            if latdist > lateral_threshold:
+                continue
+            # compute distance along route from agent pos to this projected point
+            # if projection is behind agent (i < a_idx or equal but frac <= a_frac) skip
+            if i < a_idx:
+                continue
+            if i == a_idx and frac <= a_frac + 1e-9:
+                continue
+            d = cum_len_to(i, frac)
+            if d < 0:
+                continue
+            if best_dist is None or d < best_dist:
+                best_dist = d
+        return best_dist
+
+    def get_pedestrians_ahead(self, agent, look_ahead_m: float = 30.0, lateral_threshold: float = 3.0):
+        """Return (distance_m, pedestrian_speed) for the nearest pedestrian ahead on the agent's route within look_ahead_m.
+        Returns (None, 0.0) if none found.
+        """
+        best = None
+        best_speed = 0.0
+        for other in self.agents:
+            if other is agent:
+                continue
+            if getattr(other, 'mode', None) != 'walk':
+                continue
+            pt = getattr(other, 'current_coord', None)
+            if pt is None:
+                continue
+            d = self._distance_along_route_to_point(agent, pt, lateral_threshold=lateral_threshold)
+            if d is None:
+                continue
+            if d <= look_ahead_m:
+                if best is None or d < best:
+                    best = d
+                    best_speed = getattr(other, 'v', 0.0)
+        if best is None:
+            return (None, 0.0)
+        return (best, best_speed)
+
+    def get_pedestrians_on_edge(self, edge_key, lateral_threshold: float = 3.0):
+        """Return number of pedestrians currently on the geometric edge (u,v) within lateral_threshold.
+        edge_key is (u,v) node tuple pair (coords).
+        """
+        cnt = 0
+        u, v = edge_key
+        a = u
+        b = v
+        for other in self.agents:
+            if getattr(other, 'mode', None) != 'walk':
+                continue
+            pt = getattr(other, 'current_coord', None)
+            if pt is None:
+                continue
+            frac, latdist = self._project_frac_on_segment(pt, a, b)
+            if latdist <= lateral_threshold and 0.0 <= frac <= 1.0:
+                cnt += 1
+        return cnt
+
     def update_occupancy(self):
         """Rebuild edge occupancy from current agent positions."""
         # clear
@@ -397,6 +511,11 @@ class Environment:
             self.edge_multiplier[edge_key] = float('inf')
         else:
             self.edge_multiplier[edge_key] = float(factor)
+        # trigger replanning for agents whose remaining route uses this edge
+        try:
+            self._trigger_replanning(edge_key, kind=kind)
+        except Exception:
+            pass
 
     def clear_expired_construction(self):
         now = self.time
@@ -423,7 +542,76 @@ class Environment:
         density_factor = 1.0
         if density > 0.1:
             density_factor += 0.5 * (density / 0.1)
-        return base * mult * density_factor
+        # pedestrian presence penalty: increase travel time if pedestrians are on edge
+        try:
+            ped_cnt = self.get_pedestrians_on_edge(edge_key)
+        except Exception:
+            ped_cnt = 0
+        ped_factor = 1.0
+        if ped_cnt > 0:
+            # each pedestrian on the edge increases travel time modestly (cap at factor 2.0)
+            ped_factor += min(1.0, 0.5 * ped_cnt)
+
+        return base * mult * density_factor * ped_factor
+
+    # ------------------- Replanning helpers -------------------
+    def _align_agent_to_route(self, agent):
+        """Set agent.position_index to the best matching segment on its current route
+        based on agent.current_coord. If no good match is found, leave index at 0.
+        """
+        try:
+            if not hasattr(agent, 'route') or not agent.route:
+                return
+            best_i = None
+            best_dist = None
+            for i in range(0, len(agent.route) - 1):
+                a = agent.route[i]
+                b = agent.route[i + 1]
+                frac, latdist = self._project_frac_on_segment(getattr(agent, 'current_coord', a), a, b)
+                if best_dist is None or latdist < best_dist:
+                    best_dist = latdist
+                    best_i = i
+            if best_i is not None:
+                agent.position_index = best_i
+        except Exception:
+            pass
+
+    def _trigger_replanning(self, edge_key, kind='slow'):
+        """Force agents whose remaining route includes `edge_key` to re-plan.
+        This is a lightweight replanning: agents will compute a new route from
+        their current position to their `end_coord` using the current environment
+        travel times.
+        """
+        affected = []
+        for agent in list(self.agents):
+            try:
+                if not hasattr(agent, 'route') or not agent.route:
+                    continue
+                idx = getattr(agent, 'position_index', 0)
+                for i in range(idx, len(agent.route) - 1):
+                    e = (agent.route[i], agent.route[i + 1])
+                    if e == edge_key:
+                        affected.append(agent)
+                        break
+            except Exception:
+                continue
+
+        for agent in affected:
+            try:
+                # re-plan from the agent's current coordinate
+                start = getattr(agent, 'current_coord', None)
+                agent.plan_route(self.G, env=self, from_coord=start)
+                # align agent's position index with new route
+                self._align_agent_to_route(agent)
+                # if the edge was closed, stop the agent to avoid driving through it
+                if kind == 'closure':
+                    try:
+                        agent.v = 0.0
+                    except Exception:
+                        pass
+            except Exception:
+                # ignore failures in replanning for robustness
+                pass
 
     def step(self, dt: float):
         """Advance the environment clock and step all registered agents.

@@ -30,14 +30,15 @@ class CarAgent:
         # lane index on current edge (0 = leftmost/default)
         self.lane = 0
 
-    def plan_route(self, G: nx.Graph, default_speed_m_s: float = 13.89, env=None):
+    def plan_route(self, G: nx.Graph, default_speed_m_s: float = 13.89, env=None, from_coord=None):
         """A* route planning from start_coord to end_coord on graph G."""
         try:
             from model.network_utils import nearest_node
         except Exception:
             from .network_utils import nearest_node
 
-        self._start_node = nearest_node(G, self.start_coord)
+        start_point = from_coord if from_coord is not None else self.start_coord
+        self._start_node = nearest_node(G, start_point)
         self._end_node = nearest_node(G, self.end_coord)
 
         def heuristic(u, v):
@@ -116,6 +117,14 @@ class CarAgent:
         if env is None:
             return False
         try:
+            # avoid attempting lane changes when pedestrians are very close ahead
+            try:
+                ped_dist, ped_speed = env.get_pedestrians_ahead(self, look_ahead_m=10.0)
+            except Exception:
+                ped_dist = None
+            if ped_dist is not None and ped_dist <= 8.0:
+                return False
+
             target = env.can_change_lane(self)
             if target is None:
                 return False
@@ -132,6 +141,7 @@ class CarAgent:
         # decide on lane change (overtaking) before acceleration/movement
         try:
             if self.evaluate_lane_shift(env):
+                # check pedestrians nearby and avoid changing lanes if yielding required
                 changed = self.attempt_lane_change(env)
                 if changed:
                     # small brief speed boost to reflect successful overtake initiation
@@ -144,12 +154,30 @@ class CarAgent:
 
         # virtual preceding vehicle/pedestrian/tram
         leader_dist, leader_speed = self._find_virtual_preceding(env)
+        # pedestrian ahead forcing yield
+        ped_dist, ped_speed = (None, 0.0)
+        try:
+            if env is not None:
+                ped_dist, ped_speed = env.get_pedestrians_ahead(self, look_ahead_m=30.0)
+        except Exception:
+            ped_dist, ped_speed = (None, 0.0)
+        a_ped = 0.0
+        if ped_dist is not None:
+            # if pedestrian is close, produce a strong braking/stop behavior
+            if ped_dist <= 2.0:
+                # immediate stop
+                a_ped = -5.0
+            elif ped_dist <= 8.0:
+                # gradual strong braking as we approach the pedestrian
+                a_ped = -3.0 * (1.0 - (ped_dist - 2.0) / 6.0)
+            else:
+                a_ped = 0.0
         a_rep = self._repulsive_from_leader(leader_dist, leader_speed)
 
         # simple stochastic fluctuation xi(t)
         xi = random.gauss(0, 0.05)
 
-        a_total = a_des + a_rep + xi
+        a_total = a_des + a_rep + a_ped + xi
         # clip by comfortable braking/accel limits
         if a_total > self.a_max:
             a_total = self.a_max
