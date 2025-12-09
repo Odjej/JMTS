@@ -1,0 +1,7 @@
+metric,value
+Total simulations,54
+Total vehicles,16740
+Mean detour %,0.53%
+Median detour %,0.00%
+Vehicles with detour (>0%),8938 (53.4%)
+Vehicles with major detour (>10%),287 (1.7%)
