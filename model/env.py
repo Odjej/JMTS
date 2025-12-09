@@ -492,7 +492,7 @@ class Environment:
         except Exception:
             return 0.0
 
-    def apply_construction(self, edge_key, kind='slow', factor=1.0, lanes_reduced=0, until=None):
+    def apply_construction(self, edge_key, kind='slow', factor=3.0, lanes_reduced=0, until=None):
         """Apply a construction event modifying edge travel times.
 
         - kind: 'slow'|'closure'|'lane_reduction'
@@ -500,6 +500,25 @@ class Environment:
         - lanes_reduced: integer, not used for lane topology yet
         - until: simulation time until which event applies (None = persistent)
         """
+        # Ensure the provided edge_key exists in the graph; if orientation is reversed
+        # try to canonicalize to the graph's edge orientation. If the edge is not
+        # present in the graph, warn and do not apply the construction.
+        try:
+            u, v = edge_key
+        except Exception:
+            print(f"apply_construction: invalid edge_key {edge_key}")
+            return False
+
+        if not self.G.has_edge(u, v):
+            if self.G.has_edge(v, u):
+                # use the actual stored orientation
+                edge_key = (v, u)
+                u, v = edge_key
+            else:
+                # edge not present in graph: ignore and warn
+                print(f"apply_construction: edge {edge_key} not found in graph; skipping")
+                return False
+
         self.construction_events[edge_key] = {
             'kind': kind,
             'factor': float(factor),

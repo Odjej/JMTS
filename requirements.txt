@@ -1,8 +1,22 @@
-geopandas
-networkx
-matplotlib
-numpy
-osmnx
-matplotlib
-pandas
-shapely
+# Requirements for JMTS project
+# Core scientific / plotting
+numpy>=1.21
+pandas>=1.3
+matplotlib>=3.4
+networkx>=2.6
+
+# GIS / geospatial
+geopandas>=0.12
+shapely>=1.8
+fiona>=1.8
+pyproj>=3.0
+# rtree can accelerate spatial indexes; optional on some platforms
+rtree>=0.9
+osmnx>=1.2
+
+# Optional (useful for basemaps / context)
+contextily>=1.1
+
+# Notes:
+# - On Windows, installing geopandas/osmnx often works best via conda due to binary deps.
+# - If you want LaTeX rendering for matplotlib, install a TeX distribution (e.g., MiKTeX).

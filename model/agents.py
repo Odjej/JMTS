@@ -1,7 +1,7 @@
 import math
 import random
 import networkx as nx
-from typing import Tuple, List, Optional
+from typing import Tuple, List
 
 # --- Car agent implementing a simplified Generalized Force Model (GFM) ---
 class CarAgent:
@@ -15,7 +15,7 @@ class CarAgent:
         self.priority = priority
 
         # kinematic state (along graph nodes)
-        self.route: List[Tuple[float, float]] = []   # list of node coordinates 
+        self.route: List[Tuple[float, float]] = []   # list of node coordinates
         self._start_node = None
         self._end_node = None
 
@@ -27,6 +27,8 @@ class CarAgent:
         self.length_m = 4.5               # vehicle length
         self.position_index = 0           # index into route of current node (simple discrete position)
         self.travel_time = 0.0
+        # track distance traveled for average speed calculations
+        self.distance_travelled = 0.0
         # lane index on current edge (0 = leftmost/default)
         self.lane = 0
 
@@ -66,7 +68,7 @@ class CarAgent:
             self.route = []
             return
 
-        # store as node coordinate tuples 
+        # store as node coordinate tuples
         self.route = path
         self.position_index = 0
 
@@ -97,13 +99,6 @@ class CarAgent:
         return 0.0
 
     def _find_virtual_preceding(self, env):
-        """
-        env is expected to expose:
-          - a function to query nearest vehicle/tram/pedestrian ahead on same subsection
-          - or we can pass a simple list of agents and a graph to compute spatial distances.
-        Here we provide a thin interface: env.get_leader(self) -> (distance_m, leader_speed)
-        If not available, returns (None, 0.0)
-        """
         if env is None:
             return (None, 0.0)
         try:
@@ -113,18 +108,15 @@ class CarAgent:
             return (None, 0.0)
 
     def attempt_lane_change(self, env):
-        """Try to change lane using environment's can_change_lane logic."""
         if env is None:
             return False
         try:
-            # avoid attempting lane changes when pedestrians are very close ahead
             try:
                 ped_dist, ped_speed = env.get_pedestrians_ahead(self, look_ahead_m=10.0)
             except Exception:
                 ped_dist = None
             if ped_dist is not None and ped_dist <= 8.0:
                 return False
-
             target = env.can_change_lane(self)
             if target is None:
                 return False
@@ -133,28 +125,17 @@ class CarAgent:
             return False
 
     def step(self, dt: float, env=None):
-        """
-        Advance vehicle state over timestep dt (seconds).
-        env: simulation environment helper that can provide leader info, traffic light state,
-             virtual preceding pedestrians, etc. This keeps the agent logic separate.
-        """
         # decide on lane change (overtaking) before acceleration/movement
         try:
             if self.evaluate_lane_shift(env):
-                # check pedestrians nearby and avoid changing lanes if yielding required
                 changed = self.attempt_lane_change(env)
                 if changed:
-                    # small brief speed boost to reflect successful overtake initiation
                     self.v = min(self.v * 1.05 + 0.1, self.v0)
         except Exception:
             pass
 
-        # desired acceleration toward v0
         a_des = self._desired_accel()
-
-        # virtual preceding vehicle/pedestrian/tram
         leader_dist, leader_speed = self._find_virtual_preceding(env)
-        # pedestrian ahead forcing yield
         ped_dist, ped_speed = (None, 0.0)
         try:
             if env is not None:
@@ -163,67 +144,76 @@ class CarAgent:
             ped_dist, ped_speed = (None, 0.0)
         a_ped = 0.0
         if ped_dist is not None:
-            # if pedestrian is close, produce a strong braking/stop behavior
             if ped_dist <= 2.0:
-                # immediate stop
                 a_ped = -5.0
             elif ped_dist <= 8.0:
-                # gradual strong braking as we approach the pedestrian
                 a_ped = -3.0 * (1.0 - (ped_dist - 2.0) / 6.0)
-            else:
-                a_ped = 0.0
         a_rep = self._repulsive_from_leader(leader_dist, leader_speed)
 
-        # simple stochastic fluctuation xi(t)
         xi = random.gauss(0, 0.05)
-
         a_total = a_des + a_rep + a_ped + xi
-        # clip by comfortable braking/accel limits
         if a_total > self.a_max:
             a_total = self.a_max
-        if a_total < -5.0:  # limit strong braking
+        if a_total < -5.0:
             a_total = -5.0
 
-        # integrate
         self.v = max(0.0, self.v + a_total * dt)
-        # advance position along route: we store only nodes; to keep simple we pop nodes if we pass them.
+
         if not self.route:
             return
-        # approximate travel along straight segment between nodes using current speed
-        # compute distance that would be covered:
         dist_to_cover = self.v * dt
+        moved = 0.0
         while dist_to_cover > 0 and self.position_index < len(self.route) - 1:
             p0 = self.route[self.position_index]
             p1 = self.route[self.position_index + 1]
-            seg_len = math.hypot(p1[0] - p0[0], p1[1] - p0[1])
-            if seg_len <= 1e-6:
+            cur = getattr(self, 'current_coord', p0)
+            remain = math.hypot(p1[0] - cur[0], p1[1] - cur[1])
+            if remain <= 1e-6:
                 self.position_index += 1
+                self.current_coord = self.route[self.position_index]
                 continue
-            if dist_to_cover >= seg_len:
-                # move to next node
-                dist_to_cover -= seg_len
+            if dist_to_cover >= remain:
+                # we travel the remainder of this segment
+                moved += remain
+                dist_to_cover -= remain
                 self.position_index += 1
                 self.current_coord = self.route[self.position_index]
             else:
-                # move partway: linear interpolate between p0 and p1
-                ratio = dist_to_cover / seg_len
-                self.current_coord = (p0[0] + (p1[0] - p0[0]) * ratio,
-                                      p0[1] + (p1[1] - p0[1]) * ratio)
+                # partial traversal
+                moved += dist_to_cover
+                ratio = dist_to_cover / remain
+                self.current_coord = (cur[0] + (p1[0] - cur[0]) * ratio,
+                                      cur[1] + (p1[1] - cur[1]) * ratio)
                 dist_to_cover = 0
 
+        # increment travel time
         self.travel_time += dt
+
+        # accumulate distance traveled this timestep
+        try:
+            self.distance_travelled += moved
+        except Exception:
+            pass
+
+        # record arrival time if reached
+        try:
+            at_end = (self.position_index >= len(self.route) - 1)
+        except Exception:
+            at_end = False
+        if at_end and not hasattr(self, 'arrival_time'):
+            try:
+                if hasattr(self, 'env') and getattr(self.env, 'time', None) is not None:
+                    self.arrival_time = float(self.env.time)
+                else:
+                    self.arrival_time = float(self.travel_time)
+            except Exception:
+                self.arrival_time = float(self.travel_time)
 
     @property
     def position(self):
         return getattr(self, 'current_coord', None)
 
-    #  a simple lane shift evaluator 
     def evaluate_lane_shift(self, env):
-        """
-        Return True if shifting lane is beneficial.
-        env should provide lane traffic speeds / densities for candidate lanes.
-        For now, this is a stub implementing the idea: check neighboring lane avg speed.
-        """
         try:
             current_lane_speed = env.avg_speed_on_lane(self)
             adjacent_lane_speed = env.avg_speed_on_adjacent_lane(self)
@@ -273,10 +263,6 @@ class PedestrianAgent:
         return ang <= (self.view_angle_deg / 2.0)
 
     def step(self, dt: float, env=None):
-        """
-        env must provide a function: env.get_pedestrians_in_view(self) -> list of (pos, speed, direction)
-        The decision flow follows the discrete rules in Fujii et al. (free walk -> collision avoidance -> stop -> overtaking -> following)
-        """
         # recompute desired direction to target
         self.direction = self._compute_direction_to_target()
 
@@ -286,60 +272,46 @@ class PedestrianAgent:
             try:
                 nearby = env.get_pedestrians_in_view(self)
                 if nearby:
-                    # pick nearest
                     nearest = min(nearby, key=lambda p: math.hypot(p[0][0] - self.current_coord[0], p[0][1] - self.current_coord[1]))
             except Exception:
                 nearest = None
 
         if nearest is None:
-            # Free walk: go toward target at desired speed
             speed = self.desired_speed
             dir_vec = self.direction
         else:
             other_pos, other_speed, other_dir = nearest
-            # compute relative geometry
             rx = other_pos[0] - self.current_coord[0]
             ry = other_pos[1] - self.current_coord[1]
             dist = math.hypot(rx, ry)
-            # personal space coefficient kps and overtaking accel kac from paper
             kps = 1.2
             kac = 1.3
-            # angle between other and my dir
             dot = (other_dir[0] * self.direction[0] + other_dir[1] * self.direction[1])
-            # if opposite direction => collision avoidance
             if dot < -0.5:
-                # collision avoidance: slow (momentary stop if too close)
                 if dist < (kps * self.body_diameter):
-                    speed = 0.0  # momentary stop
-                    dir_vec = (-self.direction[1], self.direction[0])  # try sidestep 
+                    speed = 0.0
+                    dir_vec = (-self.direction[1], self.direction[0])
                 else:
                     speed = 0.0
-                    # shift direction slightly left/right to avoid
                     dir_vec = (self.direction[0] + 0.3 * (-rx / (dist + 1e-6)), self.direction[1] + 0.3 * (-ry / (dist + 1e-6)))
                     nd = math.hypot(dir_vec[0], dir_vec[1])
                     if nd > 1e-6:
                         dir_vec = (dir_vec[0] / nd, dir_vec[1] / nd)
             else:
-                # same direction: follow or overtake depending on leader speed
                 if other_speed < self.desired_speed - 0.2:
-                    # overtake: accelerate (up to kac * v0), and shift direction slightly
                     speed = min(self.desired_speed * kac, self.v + 1.0)
                     dir_vec = (self.direction[0] + 0.2 * (-rx / (dist + 1e-6)), self.direction[1] + 0.2 * (-ry / (dist + 1e-6)))
                     nd = math.hypot(dir_vec[0], dir_vec[1])
                     if nd > 1e-6:
                         dir_vec = (dir_vec[0] / nd, dir_vec[1] / nd)
                 else:
-                    # follow: match leader speed
                     speed = min(self.desired_speed, other_speed)
                     dir_vec = (other_dir[0], other_dir[1])
 
-        # update position
         self.v = speed
         dx = dir_vec[0] * self.v * dt
         dy = dir_vec[1] * self.v * dt
         self.current_coord = (self.current_coord[0] + dx, self.current_coord[1] + dy)
-
-        # if reached target (within small radius) -> finish
         if math.hypot(self.current_coord[0] - self.end_coord[0], self.current_coord[1] - self.end_coord[1]) < 0.5:
             self.mode = 'arrived'
 

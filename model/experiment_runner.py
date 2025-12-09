@@ -42,8 +42,38 @@ def pick_random_edges(G, k: int, seed: int = 0):
     return random.sample(edges, k)
 
 
-def run_single_sim(G, num_vehicles: int, num_constructions: int, construction_kind: str = 'slow', factor: float = 1.5,
-                   sim_time: float = 300.0, dt: float = 1.0, seed: int = 0) -> dict:
+def pick_edges_on_routes(G, cars, k: int, seed: int = 0):
+    """Return up to k edges sampled from the union of edges along provided agents' planned routes.
+
+    cars: iterable of agents with a `route` attribute (list of nodes).
+    Edges are returned in the same (u, v) tuple format used by the graph.
+    """
+    # gather route edges
+    route_edges = set()
+    for c in cars:
+        r = getattr(c, 'route', None) or []
+        for i in range(max(0, len(r) - 1)):
+            u = r[i]
+            v = r[i + 1]
+            if G.has_edge(u, v):
+                route_edges.add((u, v))
+            elif G.has_edge(v, u):
+                # account for undirected/bidirectional storage
+                route_edges.add((v, u))
+
+    edges = list(route_edges)
+    random.seed(seed)
+    if not edges:
+        # fallback to global random edges
+        return pick_random_edges(G, k, seed=seed)
+    if k >= len(edges):
+        return edges
+    return random.sample(edges, k)
+
+
+def run_single_sim(G, num_vehicles: int, num_constructions: int, construction_kind: str = 'slow', factor: float = 3,
+                   sim_time: float = 300.0, dt: float = 1.0, seed: int = 0,
+                   route_only_constructions: bool = False) -> dict:
     """Run a single simulation and return travel time statistics."""
     env = Environment(G)
 
@@ -57,9 +87,50 @@ def run_single_sim(G, num_vehicles: int, num_constructions: int, construction_ki
         env.register(c)
 
     # apply construction events immediately at t=0 on random edges
-    edges = pick_random_edges(G, num_constructions, seed=seed)
+    if route_only_constructions:
+        edges = pick_edges_on_routes(G, cars, num_constructions, seed=seed)
+    else:
+        edges = pick_random_edges(G, num_constructions, seed=seed)
     for e in edges:
         env.apply_construction(e, kind=construction_kind, factor=factor, until=None)
+
+    # --- auto-compute required sim_time from predicted route travel times ---
+    try:
+        predicted_times = []
+        for c in cars:
+            # ensure route planned
+            if not getattr(c, 'route', None):
+                try:
+                    c.plan_route(G, env=env)
+                except Exception:
+                    c.plan_route(G)
+            # sum env edge travel times along the route
+            rt = 0.0
+            r = getattr(c, 'route', []) or []
+            for i in range(max(0, len(r) - 1)):
+                u = r[i]
+                v = r[i + 1]
+                try:
+                    rt += float(env.get_edge_travel_time((u, v)))
+                except Exception:
+                    # fallback: use euclidean length / desired speed
+                    try:
+                        ux, uy = G.nodes[u]['x'], G.nodes[u]['y']
+                        vx, vy = G.nodes[v]['x'], G.nodes[v]['y']
+                        length = ((ux - vx) ** 2 + (uy - vy) ** 2) ** 0.5
+                        rt += length / max(1e-3, getattr(c, 'v0', 13.89))
+                    except Exception:
+                        rt += 0.0
+            predicted_times.append(rt)
+        if predicted_times:
+            max_pred = max(predicted_times)
+            # choose sim_time as provided or larger of predicted * 1.2 + buffer
+            computed = max_pred * 1.2 + 60.0
+            if sim_time is None or sim_time < computed:
+                sim_time = computed
+    except Exception:
+        # if anything goes wrong, keep provided sim_time
+        pass
 
     steps = max(1, int(sim_time // dt))
     for _ in range(steps):
@@ -67,24 +138,37 @@ def run_single_sim(G, num_vehicles: int, num_constructions: int, construction_ki
 
     # collect travel times and arrival stats
     travel_times = []
+    avg_speeds = []
     arrived = 0
     for c in cars:
-        # judge arrival: position_index at or beyond last node OR distance to end < 5 m
         try:
-            if getattr(c, 'position_index', 0) >= max(0, len(getattr(c, 'route', [])) - 1):
-                arrived = arrived + 1
-                travel_times.append(c.travel_time)
+            # prefer explicit arrival_time recorded by agents
+            if hasattr(c, 'arrival_time'):
+                arrived += 1
+                t = float(c.arrival_time)
+                travel_times.append(t)
+                # average speed = distance_travelled / time
+                d = float(getattr(c, 'distance_travelled', 0.0))
+                avg_speeds.append(d / t if t > 0 else 0.0)
                 continue
-            # fallback distance check
+
+            # judge arrival by position index or proximity
+            if getattr(c, 'position_index', 0) >= max(0, len(getattr(c, 'route', [])) - 1):
+                arrived += 1
+                travel_times.append(c.travel_time)
+                d = float(getattr(c, 'distance_travelled', 0.0))
+                avg_speeds.append(d / c.travel_time if c.travel_time > 0 else 0.0)
+                continue
             end = c.end_coord
             pos = getattr(c, 'current_coord', c.start_coord)
             dx = pos[0] - end[0]
             dy = pos[1] - end[1]
             if (dx*dx + dy*dy)**0.5 < 5.0:
-                arrived = arrived + 1
+                arrived += 1
                 travel_times.append(c.travel_time)
+                d = float(getattr(c, 'distance_travelled', 0.0))
+                avg_speeds.append(d / c.travel_time if c.travel_time > 0 else 0.0)
             else:
-                # censored: did not arrive in sim_time
                 travel_times.append(float('nan'))
         except Exception:
             travel_times.append(float('nan'))
@@ -108,16 +192,28 @@ def run_single_sim(G, num_vehicles: int, num_constructions: int, construction_ki
     else:
         result.update({'mean_travel_time': float('nan'), 'median_travel_time': float('nan'), 'stdev_travel_time': float('nan')})
 
+    # aggregate average speeds for arrived vehicles
+    arrived_speeds = [s for s in avg_speeds if not (s is None or (isinstance(s, float) and (s != s)))]
+    if arrived_speeds:
+        result.update({
+            'mean_avg_speed': statistics.mean(arrived_speeds),
+            'median_avg_speed': statistics.median(arrived_speeds),
+            'stdev_avg_speed': statistics.stdev(arrived_speeds) if len(arrived_speeds) > 1 else 0.0,
+        })
+    else:
+        result.update({'mean_avg_speed': float('nan'), 'median_avg_speed': float('nan'), 'stdev_avg_speed': float('nan')})
+
     return result
 
 
 def batch_run(graph_path: str = DEFAULT_GPKG,
-              vehicle_counts: List[int] = [10, 25, 50, 100, 200, 500, 1000, 2000],
-              construction_counts: List[int] = [0, 1, 3, 5, 10, 20, 50, 100, 200],
+              vehicle_counts: List[int] = [10, 25, 50, 100],
+              construction_counts: List[int] = [0, 1, 3, 5, 10, 20],
               seeds: List[int] = [0, 1, 2],
               out_csv: str = 'experiment_results.csv',
-              sim_time: float = 4000.0,
-              dt: float = 1.0):
+              sim_time: float = 5000.0,
+              dt: float = 1.0,
+              route_only_constructions: bool = False):
     print(f'Loading edges from: {graph_path}')
     edges = load_edges(graph_path)
     G = build_graph_from_edges(edges)
@@ -130,11 +226,13 @@ def batch_run(graph_path: str = DEFAULT_GPKG,
             for s in seeds:
                 i += 1
                 print(f'Running {i}/{total}: vehicles={nv}, constructions={nc}, seed={s}')
-                res = run_single_sim(G, nv, nc, sim_time=sim_time, dt=dt, seed=s)
+                res = run_single_sim(G, nv, nc, sim_time=sim_time, dt=dt, seed=s,
+                                     route_only_constructions=route_only_constructions)
                 rows.append(res)
     # write CSV
-    keys = ['num_vehicles', 'num_constructions', 'seed', 'n_arrived', 'n_total', 'arrival_rate',
-            'mean_travel_time', 'median_travel_time', 'stdev_travel_time']
+        keys = ['num_vehicles', 'num_constructions', 'seed', 'n_arrived', 'n_total', 'arrival_rate',
+            'mean_travel_time', 'median_travel_time', 'stdev_travel_time',
+            'mean_avg_speed', 'median_avg_speed', 'stdev_avg_speed']
     with open(out_csv, 'w', newline='') as f:
         writer = csv.DictWriter(f, fieldnames=keys)
         writer.writeheader()
@@ -146,5 +244,4 @@ def batch_run(graph_path: str = DEFAULT_GPKG,
 
 
 if __name__ == '__main__':
-    # quick smoke run with small values
-    batch_run(vehicle_counts=[10], construction_counts=[0, 1], seeds=[0, 1], out_csv='experiment_quick.csv', sim_time=400)
+    batch_run(vehicle_counts=[100,500], construction_counts=[0, 20, 100, 200, 500], seeds=[4], out_csv='experiment.csv', sim_time=5000, route_only_constructions=True)

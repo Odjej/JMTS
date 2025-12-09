@@ -1,5 +1,0 @@
-num_vehicles,num_constructions,seed,n_arrived,n_total,arrival_rate,mean_travel_time,median_travel_time,stdev_travel_time
-10,0,0,0,10,0.0,nan,nan,nan
-10,0,1,0,10,0.0,nan,nan,nan
-10,1,0,0,10,0.0,nan,nan,nan
-10,1,1,0,10,0.0,nan,nan,nan
