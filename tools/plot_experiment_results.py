@@ -148,28 +148,6 @@ def plot_avg_speed(df, out_dir, prefix='results'):
     return png, pdf
 
 
-def create_report(out_dir, images, csv_path):
-    md = []
-    md.append('# Experiment Results')
-    md.append('')
-    md.append(f'Source CSV: `{csv_path}`')
-    md.append('')
-    md.append('Generated figures:')
-    md.append('')
-    for img in images:
-        fname = os.path.basename(img)
-        md.append(f'![{fname}]({fname})')
-        md.append('')
-    md.append('')
-    md.append('## Notes')
-    md.append('- Plots show mean values aggregated across seeds. Error shading shows stddev when available.')
-
-    md_path = os.path.join(out_dir, 'report.md')
-    with open(md_path, 'w', encoding='utf8') as f:
-        f.write('\n'.join(md))
-    return md_path
-
-
 def main():
     p = argparse.ArgumentParser()
     p.add_argument('csv', help='experiment CSV file')
@@ -182,9 +160,8 @@ def main():
     t1 = plot_travel_time(df, out_dir, prefix=args.prefix)
     t2 = plot_avg_speed(df, out_dir, prefix=args.prefix)
     imgs = [t1[0], t1[1], t2[0], t2[1]]
-    md = create_report(out_dir, imgs, args.csv)
     print('Wrote images:', imgs)
-    print('Wrote report:', md)
+
 
 if __name__ == '__main__':
     main()

@@ -71,28 +71,45 @@ def pick_edges_on_routes(G, cars, k: int, seed: int = 0):
     return random.sample(edges, k)
 
 
-def run_single_sim(G, num_vehicles: int, num_constructions: int, construction_kind: str = 'slow', factor: float = 3,
-                   sim_time: float = 300.0, dt: float = 1.0, seed: int = 0,
-                   route_only_constructions: bool = False, track_per_vehicle: bool = False) -> dict:
-    """Run a single simulation and return travel time statistics (optionally with per-vehicle logging)."""
+def run_single_sim(
+        G,
+        num_vehicles: int,
+        num_constructions: int,
+        construction_kind: str = 'slow',
+        factor: float = 3,
+        sim_time: float = 300.0,
+        dt: float = 1.0,
+        seed: int = 0,
+        route_only_constructions: bool = False,
+        track_per_vehicle: bool = False,
+        slow_prob: float = 0.7,
+        lane_reduction_prob: float = 0.2,
+        closure_prob: float = 0.1,
+        slow_factor: float = 3.0,
+        lane_factor: float = 1.5,
+) -> dict:
+    """Run a single simulation and return travel time statistics (optionally with per-vehicle logging).
+
+    Construction types are sampled per edge with probabilities:
+        slow_prob (default 0.7), lane_reduction_prob (0.2), closure_prob (0.1).
+    Probabilities are normalized if they don't sum to 1.
+    slow_factor and lane_factor control travel-time multipliers for their respective types.
+    """
     env = Environment(G)
 
     cars = spawn_cars(G, num_vehicles, seed=seed)
-    
-    # Initialize per-vehicle tracking if requested
+
     if track_per_vehicle:
         for c in cars:
-            c.num_replans = 0  # Track route replans (detours)
+            c.num_replans = 0
             c.initial_route_length = None
-    
+
     for c in cars:
-        # plan initial route using environment travel times
         try:
             c.plan_route(G, env=env)
         except Exception:
             c.plan_route(G)
-        
-        # Store initial route length for detour detection
+
         if track_per_vehicle and c.route:
             try:
                 from model.network_utils import nearest_node
@@ -104,32 +121,46 @@ def run_single_sim(G, num_vehicles: int, num_constructions: int, construction_ki
                 try:
                     ux, uy = G.nodes[u]['x'], G.nodes[u]['y']
                     vx, vy = G.nodes[v]['x'], G.nodes[v]['y']
-                    route_length += ((ux - vx)**2 + (uy - vy)**2)**0.5
-                except:
+                    route_length += ((ux - vx) ** 2 + (uy - vy) ** 2) ** 0.5
+                except Exception:
                     pass
             c.initial_route_length = route_length
-        
+
         env.register(c)
 
-    # apply construction events immediately at t=0 on random edges
     if route_only_constructions:
         edges = pick_edges_on_routes(G, cars, num_constructions, seed=seed)
     else:
         edges = pick_random_edges(G, num_constructions, seed=seed)
-    for e in edges:
-        env.apply_construction(e, kind=construction_kind, factor=factor, until=None)
 
-    # --- auto-compute required sim_time from predicted route travel times ---
+    total_p = slow_prob + lane_reduction_prob + closure_prob
+    if total_p <= 0:
+        total_p = 1.0
+    sp = slow_prob / total_p
+    lp = lane_reduction_prob / total_p
+    cp = closure_prob / total_p
+    rng = random.Random(seed + 42)
+    for e in edges:
+        r = rng.random()
+        if r < sp:
+            kind = 'slow'
+            k_factor = slow_factor
+        elif r < sp + lp:
+            kind = 'lane_reduction'
+            k_factor = lane_factor
+        else:
+            kind = 'closure'
+            k_factor = factor
+        env.apply_construction(e, kind=kind, factor=k_factor, until=None)
+
     try:
         predicted_times = []
         for c in cars:
-            # ensure route planned
             if not getattr(c, 'route', None):
                 try:
                     c.plan_route(G, env=env)
                 except Exception:
                     c.plan_route(G)
-            # sum env edge travel times along the route
             rt = 0.0
             r = getattr(c, 'route', []) or []
             for i in range(max(0, len(r) - 1)):
@@ -138,7 +169,6 @@ def run_single_sim(G, num_vehicles: int, num_constructions: int, construction_ki
                 try:
                     rt += float(env.get_edge_travel_time((u, v)))
                 except Exception:
-                    # fallback: use euclidean length / desired speed
                     try:
                         ux, uy = G.nodes[u]['x'], G.nodes[u]['y']
                         vx, vy = G.nodes[v]['x'], G.nodes[v]['y']
@@ -149,35 +179,30 @@ def run_single_sim(G, num_vehicles: int, num_constructions: int, construction_ki
             predicted_times.append(rt)
         if predicted_times:
             max_pred = max(predicted_times)
-            # choose sim_time as provided or larger of predicted * 1.2 + buffer
             computed = max_pred * 1.2 + 60.0
             if sim_time is None or sim_time < computed:
                 sim_time = computed
     except Exception:
-        # if anything goes wrong, keep provided sim_time
         pass
 
     steps = max(1, int(sim_time // dt))
     for _ in range(steps):
         env.step(dt)
 
-    # collect travel times and arrival stats
     travel_times = []
     avg_speeds = []
     arrived = 0
-    per_vehicle_data = []  # for detailed per-vehicle logging
-    
+    per_vehicle_data = []
+
     for c in cars:
         try:
-            # prefer explicit arrival_time recorded by agents
             if hasattr(c, 'arrival_time'):
                 arrived += 1
                 t = float(c.arrival_time)
                 travel_times.append(t)
-                # average speed = distance_travelled / time
                 d = float(getattr(c, 'distance_travelled', 0.0))
                 avg_speeds.append(d / t if t > 0 else 0.0)
-                
+
                 if track_per_vehicle:
                     per_vehicle_data.append({
                         'vehicle_id': c.agent_id,
@@ -190,7 +215,6 @@ def run_single_sim(G, num_vehicles: int, num_constructions: int, construction_ki
                     })
                 continue
 
-            # judge arrival by position index or proximity
             if getattr(c, 'position_index', 0) >= max(0, len(getattr(c, 'route', [])) - 1):
                 arrived += 1
                 travel_times.append(c.travel_time)
@@ -211,7 +235,7 @@ def run_single_sim(G, num_vehicles: int, num_constructions: int, construction_ki
             pos = getattr(c, 'current_coord', c.start_coord)
             dx = pos[0] - end[0]
             dy = pos[1] - end[1]
-            if (dx*dx + dy*dy)**0.5 < 5.0:
+            if (dx * dx + dy * dy) ** 0.5 < 5.0:
                 arrived += 1
                 travel_times.append(c.travel_time)
                 d = float(getattr(c, 'distance_travelled', 0.0))
@@ -251,7 +275,6 @@ def run_single_sim(G, num_vehicles: int, num_constructions: int, construction_ki
                     'arrived': 0
                 })
 
-    # compute stats for arrived vehicles
     arrived_times = [t for t in travel_times if not (t is None or (isinstance(t, float) and (t != t)))]
     result = {
         'num_vehicles': num_vehicles,
@@ -268,9 +291,12 @@ def run_single_sim(G, num_vehicles: int, num_constructions: int, construction_ki
             'stdev_travel_time': statistics.stdev(arrived_times) if len(arrived_times) > 1 else 0.0,
         })
     else:
-        result.update({'mean_travel_time': float('nan'), 'median_travel_time': float('nan'), 'stdev_travel_time': float('nan')})
+        result.update({
+            'mean_travel_time': float('nan'),
+            'median_travel_time': float('nan'),
+            'stdev_travel_time': float('nan')
+        })
 
-    # aggregate average speeds for arrived vehicles
     arrived_speeds = [s for s in avg_speeds if not (s is None or (isinstance(s, float) and (s != s)))]
     if arrived_speeds:
         result.update({
@@ -279,26 +305,30 @@ def run_single_sim(G, num_vehicles: int, num_constructions: int, construction_ki
             'stdev_avg_speed': statistics.stdev(arrived_speeds) if len(arrived_speeds) > 1 else 0.0,
         })
     else:
-        result.update({'mean_avg_speed': float('nan'), 'median_avg_speed': float('nan'), 'stdev_avg_speed': float('nan')})
+        result.update({
+            'mean_avg_speed': float('nan'),
+            'median_avg_speed': float('nan'),
+            'stdev_avg_speed': float('nan')
+        })
 
-    # Add per-vehicle detour metrics to result
     if track_per_vehicle and per_vehicle_data:
         arrived_vehicles = [v for v in per_vehicle_data if v['arrived'] == 1]
         if arrived_vehicles:
-            # Calculate detour rates
             replans = [v['num_replans'] for v in arrived_vehicles]
             detour_distances = []
             for v in arrived_vehicles:
                 if v['distance_travelled'] > 0 and v['initial_route_length'] > 0:
                     detour_ratio = v['distance_travelled'] / v['initial_route_length']
                     detour_distances.append(detour_ratio)
-            
+
             result['mean_num_replans'] = statistics.mean(replans) if replans else 0.0
             result['max_num_replans'] = max(replans) if replans else 0
-            result['pct_vehicles_rerouted'] = (sum(1 for r in replans if r > 0) / len(replans) * 100) if replans else 0.0
+            result['pct_vehicles_rerouted'] = (
+                sum(1 for r in replans if r > 0) / len(replans) * 100
+            ) if replans else 0.0
             result['mean_detour_ratio'] = statistics.mean(detour_distances) if detour_distances else 1.0
-            result['vehicles_with_detours'] = sum(1 for d in detour_distances if d > 1.1)  # >10% longer route
-        
+            result['vehicles_with_detours'] = sum(1 for d in detour_distances if d > 1.1)
+
         result['per_vehicle_data'] = per_vehicle_data
 
     return result
@@ -313,7 +343,13 @@ def batch_run(graph_path: str = DEFAULT_GPKG,
               dt: float = 1.0,
               route_only_constructions: bool = False,
               track_per_vehicle: bool = False,
-              per_vehicle_csv: str = None):
+              per_vehicle_csv: str = None,
+              slow_prob: float = 0.7,
+              lane_reduction_prob: float = 0.2,
+              closure_prob: float = 0.1,
+              slow_factor: float = 3.0,
+              lane_factor: float = 1.5,
+              factor: float = 3.0):
     print(f'Loading edges from: {graph_path}')
     edges = load_edges(graph_path)
     G = build_graph_from_edges(edges)
@@ -329,7 +365,13 @@ def batch_run(graph_path: str = DEFAULT_GPKG,
                 print(f'Running {i}/{total}: vehicles={nv}, constructions={nc}, seed={s}')
                 res = run_single_sim(G, nv, nc, sim_time=sim_time, dt=dt, seed=s,
                                      route_only_constructions=route_only_constructions,
-                                     track_per_vehicle=track_per_vehicle)
+                                     track_per_vehicle=track_per_vehicle,
+                                     slow_prob=slow_prob,
+                                     lane_reduction_prob=lane_reduction_prob,
+                                     closure_prob=closure_prob,
+                                     slow_factor=slow_factor,
+                                     lane_factor=lane_factor,
+                                     factor=factor)
                 
                 # Extract per-vehicle data if present
                 if track_per_vehicle and 'per_vehicle_data' in res:
