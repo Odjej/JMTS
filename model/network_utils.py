@@ -1,10 +1,28 @@
+"""
+Network graph construction utilities for multi-modal transportation networks.
+
+Handles loading edge geometries from GeoPackage files, projecting to metric CRS,
+and building directed NetworkX graphs with attributes for routing and simulation.
+"""
 import geopandas as gpd
 import networkx as nx
 import numpy as np
-import geopandas as gpd
+
 
 def load_edges(gpkg_path, layer=None):
-    """Load edge layer from a GeoPackage and ensure a metric CRS and length."""
+    """
+    Load and project edge layer from a GeoPackage file to metric CRS.
+    
+    Reads edges from GeoPackage, estimates UTM zone, and computes edge lengths.
+    Falls back to Web Mercator (EPSG:3857) if UTM estimation fails.
+    
+    Args:
+        gpkg_path: Path to GeoPackage file (.gpkg)
+        layer: Layer name within GeoPackage; if None, loads default layer
+    
+    Returns:
+        GeoDataFrame: Edges with 'length_m' column in metric CRS (UTM or Web Mercator)
+    """
     gdf = gpd.read_file(gpkg_path, layer=layer)
     # Project to a metric CRS if possible
     try:
@@ -18,11 +36,25 @@ def load_edges(gpkg_path, layer=None):
     return gdf
 
 def build_graph_from_edges(edges_gdf, default_speed_kmph=50):
-    """
-    Build a directed NetworkX graph from an edges GeoDataFrame.
-
-    Nodes are created from geometry endpoints (coordinate tuples). Edges get
-    attributes: length_m, travel_time_s, edge_id.
+    """Build directed NetworkX graph from GeoDataFrame of edges.
+    
+    Creates nodes at geometry endpoints (coordinate tuples) and edges with
+    attributes for routing, travel time calculation, and simulation.
+    
+    Handles speed information from multiple sources:
+      1. Explicit 'travel_time_s' column
+      2. Speed fields: 'speed_kmph', 'maxspeed' (in km/h)
+      3. Falls back to default_speed_kmph parameter
+    
+    Args:
+        edges_gdf: GeoDataFrame with LineString geometries and optional speed columns
+        default_speed_kmph: Fallback speed for all edges (km/h), default 50
+    
+    Returns:
+        nx.DiGraph: Directed graph with nodes as (lon, lat) tuples and edge attributes:
+            - length_m: Edge length in meters
+            - travel_time_s: Base travel time in seconds (at free-flow speed)
+            - edge_id: Original row index from GeoDataFrame
     """
     G = nx.DiGraph()
 

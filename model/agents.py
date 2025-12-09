@@ -1,10 +1,26 @@
+"""
+Agent behaviors for vehicle and pedestrian simulation.
+
+Implements:
+  - CarAgent: vehicles with kinematic dynamics, route planning, and congestion-aware braking
+  - PedestrianAgent: pedestrians with Fujii-like behavior for walking and avoidance
+"""
 import math
 import random
 import networkx as nx
 from typing import Tuple, List
 
-# --- Car agent implementing a simplified Generalized Force Model (GFM) ---
+
 class CarAgent:
+    """Simulates a car agent using simplified Generalized Force Model (GFM) dynamics.
+    
+    Features:
+      - A* route planning with environment-aware edge weights
+      - Relaxation toward desired speed with leader-distance braking
+      - Pedestrian-aware yielding/braking
+      - Lane changes with cooldown
+      - Travel time and distance tracking for statistics
+    """
     def __init__(self, agent_id: str, start_coord: Tuple[float, float], end_coord: Tuple[float, float],
                  priority: int = 1, desired_speed_m_s: float = 13.89):
         self.agent_id = agent_id
@@ -33,7 +49,17 @@ class CarAgent:
         self.lane = 0
 
     def plan_route(self, G: nx.Graph, default_speed_m_s: float = 13.89, env=None, from_coord=None):
-        """A* route planning from start_coord to end_coord on graph G."""
+        """Plan A* route from current position to destination using environment-aware edge weights.
+        
+        Uses A* search on the network graph with heuristic based on Euclidean distance.
+        Edge weights include historical travel time and construction penalties if enabled.
+        
+        Args:
+            G: NetworkX graph with 'x' and 'y' node attributes
+            default_speed_m_s: Fallback speed for weight calculation (m/s), default 13.89
+            env: Environment object with get_edge_travel_time() method for dynamic weights
+            from_coord: Optional start coordinate; uses self.start_coord if None
+        """
         try:
             from model.network_utils import nearest_node
         except Exception:
@@ -73,16 +99,30 @@ class CarAgent:
         self.position_index = 0
 
     def _desired_accel(self):
-        """Relaxation to desired speed: (v0 - v) / tau, clipped by a_max"""
+        """Calculate relaxation acceleration toward desired speed.
+        
+        Implements relaxation term: a = (v0 - v) / tau, clipped by maximum acceleration.
+        
+        Returns:
+            float: Acceleration in m/s^2, bounded by [-a_max, a_max]
+        """
         a = (self.v0 - self.v) / max(self.tau, 1e-6)
         if a > self.a_max:
             a = self.a_max
         return a
 
     def _repulsive_from_leader(self, leader_dist, leader_speed):
-        """
-        Simple repulsive term: if close to leader, brake harder.
-        This is a light-weight implementation of the GFM interaction term.
+        """Calculate braking acceleration due to leading vehicle.
+        
+        Implements Intelligent Driver Model (IDM)-style deceleration when gap is less
+        than desired safe following distance. If no leader, returns 0.
+        
+        Args:
+            leader_dist: Distance to leader vehicle (m) or None if no leader
+            leader_speed: Speed of leader vehicle (m/s)
+        
+        Returns:
+            float: Braking acceleration (negative), 0 if safe distance maintained
         """
         if leader_dist is None:
             return 0.0

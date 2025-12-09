@@ -12,11 +12,20 @@ except Exception:
 
 class Environment:
     """
-    Minimal environment for multi-modal simulation.
-    Supports:
-      - get_leader(agent)
-      - get_pedestrians_in_view(ped)
-      - optional lane statistics (stubs)
+    Multi-agent simulation environment managing vehicles, pedestrians, and infrastructure.
+    
+    Handles:
+      - Vehicle position tracking on directed graph edges and lanes
+      - Pedestrian waypoint navigation with spatial queries
+      - Dynamic travel time computation including construction penalties
+      - Leader detection, lane changing, and collision avoidance
+      - Construction event scheduling and impact on edge traversal times
+      
+    Attributes:
+        G: NetworkX directed graph with node attributes 'x', 'y' (WGS84 coordinates)
+        edge_occupancy: Dict mapping (edge_key, lane) to list of occupant dicts
+        construction_events: Dict mapping edge_keys to construction metadata
+        edge_multiplier: Dict of dynamic travel time multipliers per edge
     """
 
     def __init__(self, G):
@@ -54,7 +63,15 @@ class Environment:
                     self.edge_index = None
 
     def register(self, agent):
-        """Should be called after creating each agent."""
+        """
+        Register an agent with the environment for tracking and updates.
+        
+        Initializes agent attributes: env reference, lane index, lane-change cooldown tracking.
+        Must be called after agent creation and before step() calls.
+        
+        Args:
+            agent: CarAgent or PedestrianAgent instance to register
+        """
         self.agents.append(agent)
         # give agent a backref to env
         try:
@@ -82,8 +99,16 @@ class Environment:
     
     def get_leader(self, agent):
         """
-        Returns (distance_m, leader_speed) of the nearest agent
-        in front of the given agent along its route.
+        Find the nearest agent ahead along the given agent's route.
+        
+        Performs spatial-aware lookup using edge occupancy and route traversal,
+        considering only agents ahead of the current agent on the same lane.
+        
+        Args:
+            agent: CarAgent instance to find leader for
+        
+        Returns:
+            Tuple[float, float]: (distance_to_leader_m, leader_speed_m_s) or (None, 0.0) if no leader
         """
         # New spatial-aware leader lookup using edge occupancy and route traversal
         if not hasattr(agent, "route") or len(agent.route) < 2:
@@ -246,7 +271,8 @@ class Environment:
             return self.avg_speed_on_lane(agent)
 
     def can_change_lane(self, agent, min_speed_gain: float = 1.0):
-        """Decide if agent can change lane to overtake.
+        """
+        Decide if agent can change lane to overtake.
 
         Returns the target lane index if lane change is advised and available, else None.
         Simple rule: if adjacent lane avg speed > current lane avg speed + min_speed_gain
@@ -326,7 +352,8 @@ class Environment:
         return frac, dist
 
     def _distance_along_route_to_point(self, agent, point: Tuple[float, float], lateral_threshold: float = 3.0):
-        """Return distance (m) along agent.route from current agent position to projection of `point` onto route.
+        """
+        Return distance (m) along agent.route from current agent position to projection of `point` onto route.
         If projection is not within lateral_threshold on any route segment or the projected location is behind
         the agent, return None.
         """
@@ -396,8 +423,18 @@ class Environment:
         return best_dist
 
     def get_pedestrians_ahead(self, agent, look_ahead_m: float = 30.0, lateral_threshold: float = 3.0):
-        """Return (distance_m, pedestrian_speed) for the nearest pedestrian ahead on the agent's route within look_ahead_m.
-        Returns (None, 0.0) if none found.
+        """Find nearest pedestrian ahead along the agent's route within look-ahead distance.
+        
+        Projects pedestrian positions onto the agent's planned route and measures forward
+        distance. Returns nearest pedestrian within look_ahead_m and lateral_threshold.
+        
+        Args:
+            agent: CarAgent with route and position_index
+            look_ahead_m: Maximum distance to search ahead (m), default 30.0
+            lateral_threshold: Maximum perpendicular distance from route (m), default 3.0
+        
+        Returns:
+            Tuple[float, float]: (distance_to_pedestrian_m, pedestrian_speed_m_s) or (None, 0.0) if none found
         """
         best = None
         best_speed = 0.0
@@ -421,7 +458,8 @@ class Environment:
         return (best, best_speed)
 
     def get_pedestrians_on_edge(self, edge_key, lateral_threshold: float = 3.0):
-        """Return number of pedestrians currently on the geometric edge (u,v) within lateral_threshold.
+        """
+        Return number of pedestrians currently on the geometric edge (u,v) within lateral_threshold.
         edge_key is (u,v) node tuple pair (coords).
         """
         cnt = 0
@@ -493,7 +531,8 @@ class Environment:
             return 0.0
 
     def apply_construction(self, edge_key, kind='slow', factor=3.0, lanes_reduced=0, until=None):
-        """Apply a construction event modifying edge travel times.
+        """
+        Apply a construction event modifying edge travel times.
 
         - kind: 'slow'|'closure'|'lane_reduction'
         - factor: multiplier for travel time (e.g., 1.5 slows by 50%)
@@ -575,7 +614,8 @@ class Environment:
 
     # ------------------- Replanning helpers -------------------
     def _align_agent_to_route(self, agent):
-        """Set agent.position_index to the best matching segment on its current route
+        """
+        Set agent.position_index to the best matching segment on its current route
         based on agent.current_coord. If no good match is found, leave index at 0.
         """
         try:
@@ -596,7 +636,8 @@ class Environment:
             pass
 
     def _trigger_replanning(self, edge_key, kind='slow'):
-        """Force agents whose remaining route includes `edge_key` to re-plan.
+        """
+        Force agents whose remaining route includes `edge_key` to re-plan.
         This is a lightweight replanning: agents will compute a new route from
         their current position to their `end_coord` using the current environment
         travel times.
@@ -633,7 +674,8 @@ class Environment:
                 pass
 
     def step(self, dt: float):
-        """Advance the environment clock and step all registered agents.
+        """
+        Advance the environment clock and step all registered agents.
 
         This method attempts to call agent.step with signatures:
           - step(dt, sim_time, env)
