@@ -36,7 +36,8 @@ def load_edges(gpkg_path, layer=None):
     return gdf
 
 def build_graph_from_edges(edges_gdf, default_speed_kmph=50):
-    """Build directed NetworkX graph from GeoDataFrame of edges.
+    """
+    Build directed NetworkX graph from GeoDataFrame of edges.
     
     Creates nodes at geometry endpoints (coordinate tuples) and edges with
     attributes for routing, travel time calculation, and simulation.

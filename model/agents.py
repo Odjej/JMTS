@@ -49,7 +49,8 @@ class CarAgent:
         self.lane = 0
 
     def plan_route(self, G: nx.Graph, default_speed_m_s: float = 13.89, env=None, from_coord=None):
-        """Plan A* route from current position to destination using environment-aware edge weights.
+        """
+        Plan A* route from current position to destination using environment-aware edge weights.
         
         Uses A* search on the network graph with heuristic based on Euclidean distance.
         Edge weights include historical travel time and construction penalties if enabled.
@@ -112,7 +113,8 @@ class CarAgent:
         return a
 
     def _repulsive_from_leader(self, leader_dist, leader_speed):
-        """Calculate braking acceleration due to leading vehicle.
+        """
+        Calculate braking acceleration due to leading vehicle.
         
         Implements Intelligent Driver Model (IDM)-style deceleration when gap is less
         than desired safe following distance. If no leader, returns 0.
