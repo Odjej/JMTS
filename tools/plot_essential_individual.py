@@ -77,7 +77,7 @@ lines2, labels2 = ax1_twin.get_legend_handles_labels()
 ax1.legend(lines1 + lines2, labels1 + labels2, loc='upper left', fontsize=12, framealpha=0.95)
 
 # Add annotations
-ax1.annotate('Low density:\nLarge detours\n(more options)', xy=(10, 3.0), xytext=(20, 6.5),
+ax1.annotate('Low density:\nLarge detours\n(more options)', xy=(10, 7.5), xytext=(20, 6.5),
             arrowprops=dict(arrowstyle='->', color='green', lw=2.5),
             fontsize=11, fontweight='bold', color='green',
             bbox=dict(boxstyle='round,pad=0.7', facecolor='lightgreen', alpha=0.8, edgecolor='green', linewidth=2))
@@ -127,7 +127,7 @@ ax2.set_xticks(x)
 ax2.set_xticklabels([f'{int(fs)}' for fs in detour_impact_df['fleet_size']], fontsize=11)
 ax2.legend(fontsize=12, loc='upper right', framealpha=0.95)
 ax2.grid(True, alpha=0.3, axis='y')
-ax2.set_ylim(0, 65)
+ax2.set_ylim(0, 80)
 ax2.tick_params(axis='y', labelsize=11)
 
 # Add value labels on bars
@@ -168,7 +168,7 @@ effectiveness_arr = np.array(effectiveness)
 fleet_sizes_unique = sorted(arrived_df['num_vehicles'].unique())
 const_counts_unique = sorted(arrived_df['num_constructions'].unique())
 
-im = ax3.imshow(effectiveness_arr, cmap='RdYlGn_r', aspect='auto', vmin=-0.5, vmax=4)
+im = ax3.imshow(effectiveness_arr, cmap='RdYlGn_r', aspect='auto', vmin=-0.01, vmax=25)
 ax3.set_xticks(range(len(const_counts_unique)))
 ax3.set_yticks(range(len(fleet_sizes_unique)))
 ax3.set_xticklabels([f'{int(c)}' for c in const_counts_unique], fontsize=11)
