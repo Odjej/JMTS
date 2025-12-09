@@ -2,6 +2,7 @@ import random
 import csv
 import time
 import statistics
+import math
 from typing import List, Tuple
 
 try:
@@ -180,11 +181,17 @@ def run_single_sim(
         if predicted_times:
             max_pred = max(predicted_times)
             computed = max_pred * 1.2 + 60.0
+            if not math.isfinite(computed):
+                computed = sim_time if sim_time is not None else dt
             if sim_time is None or sim_time < computed:
                 sim_time = computed
     except Exception:
         pass
 
+    if dt is None or not isinstance(dt, (int, float)) or not math.isfinite(dt) or dt <= 0:
+        dt = 1.0
+    if sim_time is None or not isinstance(sim_time, (int, float)) or not math.isfinite(sim_time):
+        sim_time = dt
     steps = max(1, int(sim_time // dt))
     for _ in range(steps):
         env.step(dt)
@@ -336,7 +343,7 @@ def run_single_sim(
 
 def batch_run(graph_path: str = DEFAULT_GPKG,
               vehicle_counts: List[int] = [10, 25, 50, 100],
-              construction_counts: List[int] = [0, 1, 3, 5, 10, 20],
+              construction_counts: List[int] = [0, 1, 3, 5, 10, 20, 40],
               seeds: List[int] = [0, 1, 2],
               out_csv: str = 'experiment_results.csv',
               sim_time: float = 5000.0,
@@ -419,10 +426,10 @@ def batch_run(graph_path: str = DEFAULT_GPKG,
 
 
 if __name__ == '__main__':
-    batch_run(vehicle_counts=[10, 50, 100, 200, 500, 1000], 
-              construction_counts=[0, 5, 10], 
-              seeds=[0, 1, 2], 
-              out_csv='experiment_wide_range_v2.csv', 
-              sim_time=5000, 
+    batch_run(vehicle_counts=[10, 50, 100, 200, 500, 1000],
+              construction_counts=[0, 5, 10, 20, 40],
+              seeds=[0, 1, 2],
+              out_csv='experiment_wide_range_v2.csv',
+              sim_time=5000,
               route_only_constructions=True,
               track_per_vehicle=True)
