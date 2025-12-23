@@ -1,3 +1,4 @@
+[![DOI](https://sandbox.zenodo.org/badge/1099278845.svg)](https://handle.test.datacite.org/10.5072/zenodo.419435)
 # Järntorget Multimodal Traffic Simulator (JMTS)
 
 A Python-based agent-based simulation framework for studying how construction events and vehicle congestion impact travel times and routing behavior in urban networks. The simulator uses real GIS network data from OpenStreetMap (GeoPackage format) and supports dynamic routing, pedestrian-aware vehicle behavior, construction event tracking, and detailed per-vehicle detour analysis.
