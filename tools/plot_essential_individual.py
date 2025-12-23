@@ -119,23 +119,23 @@ bars1 = ax2.bar(x - width/2, detour_impact_df['any_detour'], width,
 bars2 = ax2.bar(x + width/2, detour_impact_df['major_detour'], width,
                 label=r'Major Detour $(>10\%)$', color='indianred', edgecolor='black', linewidth=2)
 
-ax2.set_xlabel('Fleet Size (vehicles)', fontsize=13, fontweight='bold')
-ax2.set_ylabel('% of Vehicles', fontsize=13, fontweight='bold')
+ax2.set_xlabel('Fleet Size (vehicles)', fontsize=18, fontweight='bold')
+ax2.set_ylabel(r'$\%$ of Vehicles', fontsize=18, fontweight='bold')
 ax2.set_title('Percentage of Vehicles Affected by Detours vs Fleet Size', 
-              fontsize=14, fontweight='bold', pad=20)
+              fontsize=20, fontweight='bold', pad=20)
 ax2.set_xticks(x)
-ax2.set_xticklabels([f'{int(fs)}' for fs in detour_impact_df['fleet_size']], fontsize=11)
-ax2.legend(fontsize=12, loc='upper right', framealpha=0.95)
+ax2.set_xticklabels([f'{int(fs)}' for fs in detour_impact_df['fleet_size']], fontsize=18)
+ax2.legend(fontsize=18, loc='upper right', framealpha=0.95)
 ax2.grid(True, alpha=0.3, axis='y')
 ax2.set_ylim(0, 80)
-ax2.tick_params(axis='y', labelsize=11)
+ax2.tick_params(axis='y', labelsize=18)
 
 # Add value labels on bars
 for bars in [bars1, bars2]:
     for bar in bars:
         height = bar.get_height()
         ax2.text(bar.get_x() + bar.get_width()/2., height + 1,
-                f'{height:.1f}%', ha='center', va='bottom', fontsize=10, fontweight='bold')
+                f'{height:.1f}%', ha='center', va='bottom', fontsize=18, fontweight='bold')
 
 plt.tight_layout()
 plt.savefig('plot_02_impact.png', dpi=600, bbox_inches='tight')
@@ -171,21 +171,21 @@ const_counts_unique = sorted(arrived_df['num_constructions'].unique())
 im = ax3.imshow(effectiveness_arr, cmap='RdYlGn_r', aspect='auto', vmin=-0.01, vmax=25)
 ax3.set_xticks(range(len(const_counts_unique)))
 ax3.set_yticks(range(len(fleet_sizes_unique)))
-ax3.set_xticklabels([f'{int(c)}' for c in const_counts_unique], fontsize=11)
-ax3.set_yticklabels([f'{int(f)}' for f in fleet_sizes_unique], fontsize=11)
-ax3.set_xlabel('Number of Constructions', fontsize=13, fontweight='bold')
-ax3.set_ylabel('Fleet Size (vehicles)', fontsize=13, fontweight='bold')
+ax3.set_xticklabels([f'{int(c)}' for c in const_counts_unique], fontsize=18)
+ax3.set_yticklabels([f'{int(f)}' for f in fleet_sizes_unique], fontsize=18)
+ax3.set_xlabel('Number of Constructions', fontsize=18, fontweight='bold')
+ax3.set_ylabel('Fleet Size (vehicles)', fontsize=18, fontweight='bold')
 ax3.set_title(r'Mean Detour Cost (\% extra distance) by Fleet Size and Constructions', 
-              fontsize=14, fontweight='bold', pad=20)
+              fontsize=20, fontweight='bold', pad=20)
 
 # Add values to cells
 for i in range(len(fleet_sizes_unique)):
     for j in range(len(const_counts_unique)):
         text = ax3.text(j, i, f'{effectiveness_arr[i, j]:.2f}%',
-                       ha="center", va="center", color="black", fontsize=11, fontweight='bold')
+                       ha="center", va="center", color="black", fontsize=18, fontweight='bold')
 
 cbar = plt.colorbar(im, ax=ax3, label='Mean Detour %')
-cbar.ax.tick_params(labelsize=11)
+cbar.ax.tick_params(labelsize=18)
 
 plt.tight_layout()
 plt.savefig('plot_03_effectiveness.png', dpi=600, bbox_inches='tight')
