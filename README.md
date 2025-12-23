@@ -133,7 +133,7 @@ Summarizes CSV by vehicle count and construction count, printing mean/median tra
 ## Dependencies
 
 See `requirements.txt`. Main packages:
-- `osmnx` - network dara extraction
+- `osmnx` — network dara extraction
 - `networkx` — graph operations
 - `geopandas`, `shapely`, `fiona` — GIS data loading
 - `pandas`, `numpy` — data handling
