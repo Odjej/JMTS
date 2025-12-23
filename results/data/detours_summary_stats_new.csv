@@ -11,9 +11,9 @@ Vehicles with any detour (>0%),16,025 (57.4%)
 Vehicles with major detour (>10%),841 (3.0%)
 Vehicles with severe detour (>20%),318 (1.1%)
 Vehicles with extreme detour (>50%),73 (0.3%)
-Mean replans per vehicle,0.00
-Max replans observed,0
-Vehicles with at least 1 replan,0 (0.0%)
+Mean replans per vehicle,0.64
+Max replans observed,14
+Vehicles with at least 1 replan,10,108 (36.2%)
 ,
 Detour metrics by construction count:,
   0 constructions: mean detour,0.00%

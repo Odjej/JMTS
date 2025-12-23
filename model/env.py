@@ -661,6 +661,9 @@ class Environment:
                 # re-plan from the agent's current coordinate
                 start = getattr(agent, 'current_coord', None)
                 agent.plan_route(self.G, env=self, from_coord=start)
+                # increment replan counter if agent is tracking replans
+                if hasattr(agent, 'num_replans'):
+                    agent.num_replans += 1
                 # align agent's position index with new route
                 self._align_agent_to_route(agent)
                 # if the edge was closed, stop the agent to avoid driving through it
